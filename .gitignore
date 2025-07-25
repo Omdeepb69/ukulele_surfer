@@ -1,0 +1,18 @@
+__pycache__
+# Ignore Python cache files
+*.pyc
+# Ignore compiled Python files
+*.pyo
+# Ignore Python bytecode files
+*.pyd
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints  
+
+# Ignore virtual environment directories
+
+data
+
+
+# Ignore virtual environment directoriesvenv/
+env/
