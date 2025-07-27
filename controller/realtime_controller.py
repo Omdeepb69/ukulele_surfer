@@ -90,21 +90,28 @@ class RealTimeController:
         
     def _predict_chord(self, audio_data):
         if self.detection_mode == 'model' and hasattr(self, 'model'):
-            features = self.processor.preprocess_audio(audio_data)
-            
-            with torch.no_grad():
-                output = self.model(features)
-                probabilities = torch.softmax(output, dim=1)
-                confidence, predicted = torch.max(probabilities, 1)
+            try:
+                features = self.processor.preprocess_audio(audio_data)
                 
-                if confidence.item() > self.confidence_threshold:
+                with torch.no_grad():
+                    output = self.model(features)
+                    probabilities = torch.softmax(output, dim=1)
+                    confidence, predicted = torch.max(probabilities, 1)
+                    
                     predicted_label = self.idx_to_label[predicted.item()]
                     return predicted_label, confidence.item()
+            except Exception as e:
+                print(f"Model prediction error: {e}")
+                return None, 0.0
                 
         elif self.detection_mode == 'pitch':
-            pitch = self.processor.extract_pitch(audio_data)
-            predicted_label = self.processor.classify_by_pitch(pitch)
-            return predicted_label, 0.8
+            try:
+                pitch = self.processor.extract_pitch(audio_data)
+                predicted_label = self.processor.classify_by_pitch(pitch)
+                return predicted_label, 0.8
+            except Exception as e:
+                print(f"Pitch detection error: {e}")
+                return None, 0.0
             
         return None, 0.0
     
@@ -115,31 +122,58 @@ class RealTimeController:
             
         if action in ['up', 'down', 'left', 'right', 'space']:
             pyautogui.press(action)
-            print(f"Action: {action}")
+            print(f"🎮 Action executed: {action}")
             self.last_action_time = current_time
             
     def _processing_loop(self):
+        print("🎧 Audio processing loop started - listening for any sound...")
+        
         while self.running:
-            if len(self.audio_buffer) >= self.buffer_size:
-                audio_array = np.array(list(self.audio_buffer))
+            # Process audio more frequently with smaller chunks
+            if len(self.audio_buffer) >= 1024:  # Much smaller buffer for faster detection
+                # Get recent audio data
+                recent_audio = np.array(list(self.audio_buffer)[-8192:])  # Last ~0.2 seconds
                 
-                rms = np.sqrt(np.mean(audio_array**2))
-                if rms > 0.01:
+                # Calculate volume levels
+                rms = np.sqrt(np.mean(recent_audio**2))
+                max_amplitude = np.max(np.abs(recent_audio))
+                
+                # Print sound detection info - much lower threshold
+                if rms > 0.001:  # Very sensitive threshold
+                    print(f"🔊 SOUND DETECTED! RMS: {rms:.4f}, Max: {max_amplitude:.4f}")
                     
-                    prediction, confidence = self._predict_chord(audio_array)
-                    
-                    if prediction and prediction in self.action_mapping:
-                        print(f"Detected: {prediction} (confidence: {confidence:.2f})")
-                        action = self.action_mapping[prediction]
-                        self._execute_action(action)
+                    # Try to predict only if there's significant sound
+                    if rms > 0.01:
+                        print("🎵 Analyzing audio for chord recognition...")
+                        prediction, confidence = self._predict_chord(recent_audio)
                         
+                        if prediction:
+                            if confidence > self.confidence_threshold:
+                                print(f"✅ RECOGNIZED: {prediction} (confidence: {confidence:.2f})")
+                                if prediction in self.action_mapping:
+                                    action = self.action_mapping[prediction]
+                                    self._execute_action(action)
+                                else:
+                                    print(f"⚠️  No action mapped for: {prediction}")
+                            else:
+                                print(f"❓ LOW CONFIDENCE: {prediction} (confidence: {confidence:.2f}) - threshold is {self.confidence_threshold}")
+                        else:
+                            print("❌ NOT RECOGNIZED - sound detected but no chord identified")
+                            
                         if self.debug:
-                            self.prediction_history.append((prediction, confidence))
-                            self._update_debug_plot(audio_array)
+                            self.prediction_history.append((prediction or "unknown", confidence))
+                            self._update_debug_plot(recent_audio)
+                    else:
+                        print(f"🔇 Sound too quiet for analysis (RMS: {rms:.4f}, need > 0.01)")
                 
-                self.audio_buffer.clear()
+                # Clear some buffer to prevent memory issues but keep recent data
+                if len(self.audio_buffer) > self.buffer_size * 0.8:
+                    # Remove older data, keep recent
+                    for _ in range(1024):
+                        if self.audio_buffer:
+                            self.audio_buffer.popleft()
                 
-            time.sleep(0.05)
+            time.sleep(0.01)  # Much faster processing
     
     def _update_debug_plot(self, audio_data):
         try:
@@ -160,18 +194,23 @@ class RealTimeController:
                 
             plt.tight_layout()
             plt.pause(0.01)
-        except:
-            pass
+        except Exception as e:
+            print(f"Plot update error: {e}")
     
     def start(self):
-        print("Starting Ukulele Subway Surfers Controller...")
+        print("🎸 Starting Ukulele Subway Surfers Controller...")
         print("Game controls:")
         print("- C Major: Jump (↑)")
         print("- A Minor: Slide (↓)")
         print("- G Major: Move Left (←)")
         print("- F Major: Move Right (→)")
         print("- Pluck Burst: Hoverboard (Space)")
-        print("\nPress Ctrl+C to stop")
+        print(f"\n🎚️  Audio settings:")
+        print(f"- Sample rate: {self.sample_rate} Hz")
+        print(f"- Detection mode: {self.detection_mode}")
+        print(f"- Confidence threshold: {self.confidence_threshold}")
+        print("\n🔍 Debug mode: Will print ANY sound detection")
+        print("Press Ctrl+C to stop\n")
         
         self.running = True
         
@@ -180,16 +219,34 @@ class RealTimeController:
         processing_thread.start()
         
         try:
+            print("🎤 Opening audio stream...")
             with sd.InputStream(callback=self._audio_callback,
                               channels=1,
                               samplerate=self.sample_rate,
                               blocksize=1024):
+                print("✅ Audio stream active - make some noise!")
                 while self.running:
                     time.sleep(0.1)
                     
         except KeyboardInterrupt:
-            print("\nStopping controller...")
+            print("\n🛑 Stopping controller...")
+            self.running = False
+        except Exception as e:
+            print(f"❌ Audio stream error: {e}")
             self.running = False
             
         if self.debug:
             plt.close('all')
+
+
+# Add this at the bottom to test basic functionality
+if __name__ == "__main__":
+    print("🎸 Testing Ukulele Controller with enhanced sound detection")
+    print("📋 Available audio devices:")
+    try:
+        print(sd.query_devices())
+    except Exception as e:
+        print(f"Error querying devices: {e}")
+    
+    controller = RealTimeController(detection_mode='pitch', debug=False)
+    controller.start()
